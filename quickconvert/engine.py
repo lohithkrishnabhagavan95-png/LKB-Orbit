@@ -29,8 +29,15 @@ try:  # HEIC / AVIF (iPhone photos) support
 except Exception:  # pragma: no cover
     HEIF_OK = False
 
+try:  # raster -> SVG tracing
+    import vtracer  # noqa: F401
+    VTRACER_OK = True
+except Exception:  # pragma: no cover
+    VTRACER_OK = False
+
 # ------------------------------------------------------------------ targets
-IMAGE_TARGETS = ["PNG", "JPG", "WEBP", "HEIC", "AVIF", "TIFF", "BMP", "GIF", "ICO", "PDF"]
+IMAGE_TARGETS = ["PNG", "JPG", "WEBP", "HEIC", "AVIF", "TIFF", "BMP", "GIF", "ICO", "SVG", "PDF"]
+VECTOR_TARGETS = ["PNG", "JPG", "PDF"]
 PDF_TARGETS = ["JPG", "PNG", "DOCX", "TXT"]
 DOCX_TARGETS = ["PDF", "TXT"]
 TEXT_TARGETS = ["PDF", "DOCX"]
@@ -46,6 +53,58 @@ EXT_TARGET = {".jpg": "JPG", ".jpeg": "JPG", ".png": "PNG", ".webp": "WEBP",
               ".heic": "HEIC", ".heif": "HEIC", ".avif": "AVIF"}
 
 
+# ------------------------------------------------------------------ source safety
+# Belt-and-suspenders: the set of input files for the current job. Nothing may ever
+# write over, move onto, or delete any of these — the original is sacred.
+_SOURCES: set[str] = set()
+
+# Optional progress callback (done, total) for the current job, set by run().
+_PROGRESS = None
+
+
+def _report(done: int, total: int) -> None:
+    cb = _PROGRESS
+    if cb:
+        try:
+            cb(done, total)
+        except Exception:
+            pass
+
+
+def _ensure_readable(src) -> None:
+    """Fully read the file so a OneDrive/cloud 'online-only' placeholder is downloaded
+    before we convert it. Retries a few times to give OneDrive time to hydrate."""
+    import time
+    if not src or not Path(src).exists():
+        raise UserError("That file no longer exists.")
+    for attempt in range(8):
+        try:
+            with open(src, "rb") as f:
+                while f.read(1 << 20):   # read it all -> triggers full hydration
+                    pass
+            return
+        except OSError:
+            time.sleep(0.8)
+    raise UserError("Couldn't read this file. If it's on OneDrive/cloud, right-click it → "
+                    "'Always keep on this device' (or open it once in its app), then try again.")
+
+
+def _key(path) -> str:
+    try:
+        return str(Path(path).resolve()).lower()
+    except OSError:
+        return str(path).lower()
+
+
+def _is_source(path) -> bool:
+    return _key(path) in _SOURCES
+
+
+def _guard_output(out) -> None:
+    if _is_source(out):
+        raise UserError("Refusing to overwrite the original file.")
+
+
 # ------------------------------------------------------------------ io helpers
 def atomic_save(write, out) -> None:
     """Write to a hidden temp file then rename, so Explorer never sees a partial file."""
@@ -54,6 +113,7 @@ def atomic_save(write, out) -> None:
         write(out)  # in-memory buffer
         return
     out = Path(out)
+    _guard_output(out)
     tmp = out.with_name(f".~{out.name}.part")
     try:
         write(tmp)
@@ -118,8 +178,54 @@ def open_pdf(path):
 # ------------------------------------------------------------------ images
 def image_to(src, target: str) -> list[Path]:
     target = target.upper()
+    if target == "SVG":
+        return image_to_svg(src)
     out = sibling(src, ext="." + target.lower())
     save_image(open_image(src), out, target)
+    return [out]
+
+
+# ------------------------------------------------------------------ SVG / vectors
+def image_to_svg(src) -> list[Path]:
+    """Trace a raster image into an SVG (colour vector), like 'Trace to SVG'."""
+    import vtracer
+    out = sibling(src, ext=".svg")
+    _guard_output(out)
+    vtracer.convert_image_to_svg_py(str(Path(src)), str(out))
+    return [out]
+
+
+def _svg_to_pil(src, max_px: int = 2000) -> Image.Image:
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+    import numpy as np
+    r = QSvgRenderer(str(src))
+    sz = r.defaultSize()
+    w, h = sz.width() or 512, sz.height() or 512
+    k = min(max_px / max(w, h), 4.0) if max(w, h) > 0 else 1.0
+    W, H = max(1, int(w * k)), max(1, int(h * k))
+    img = QImage(W, H, QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    r.render(p)
+    p.end()
+    img = img.convertToFormat(QImage.Format_RGBA8888)
+    ptr = img.constBits()  # memoryview, already sized to sizeInBytes()
+    arr = np.frombuffer(ptr, np.uint8).reshape((H, img.bytesPerLine() // 4, 4))[:, :W, :]
+    return Image.fromarray(arr.copy(), "RGBA")
+
+
+def svg_to_image(src, target: str) -> list[Path]:
+    out = sibling(src, ext="." + target.lower())
+    save_image(_svg_to_pil(src), out, target)
+    return [out]
+
+
+def svg_to_pdf(src) -> list[Path]:
+    out = sibling(src, ext=".pdf")
+    _guard_output(out)
+    flatten(_svg_to_pil(src)).save(out, "PDF", resolution=150.0)
     return [out]
 
 
@@ -163,9 +269,11 @@ def resize_image(src, long_side: int = 1280) -> list[Path]:
 def _pdf_pages_to_images(src, dpi: int) -> list[Image.Image]:
     imgs = []
     with open_pdf(src) as doc:
-        for page in doc:
+        total = doc.page_count
+        for i, page in enumerate(doc):
             pix = page.get_pixmap(dpi=dpi, alpha=False)
             imgs.append(Image.frombytes("RGB", (pix.width, pix.height), pix.samples))
+            _report(i + 1, total)
     return imgs
 
 
@@ -359,6 +467,7 @@ def _soffice_to(src, target_ext: str) -> Path | None:
         if not produced.exists():
             return None
         out = sibling(src, ext="." + target_ext)
+        _guard_output(out)
         shutil.move(str(produced), str(out))
         return out
 
@@ -495,13 +604,19 @@ def sheet_to_xlsx(src) -> list[Path]:
 def slide_to_txt(src) -> list[Path]:
     src = Path(src)
     if src.suffix.lower() == ".pptx":
-        from pptx import Presentation  # type: ignore
-        lines = []
-        for i, slide in enumerate(Presentation(src).slides, 1):
-            lines.append(f"--- Slide {i} ---")
-            for shape in slide.shapes:
-                if shape.has_text_frame and shape.text_frame.text.strip():
-                    lines.append(shape.text_frame.text)
+        from .render import _open_presentation
+        prs, td = _open_presentation(src)
+        try:
+            lines = []
+            for i, slide in enumerate(prs.slides, 1):
+                lines.append(f"--- Slide {i} ---")
+                for shape in slide.shapes:
+                    if shape.has_text_frame and shape.text_frame.text.strip():
+                        lines.append(shape.text_frame.text)
+        finally:
+            if td:
+                import shutil
+                shutil.rmtree(td, ignore_errors=True)
         out = sibling(src, ext=".txt")
         out.write_text("\n".join(lines), encoding="utf-8")
         return [out]
@@ -520,14 +635,26 @@ def _slide_images(src) -> list[Image.Image]:
         try:
             return _pdf_pages_to_images(pdf, int(CONFIG.get("pdf_dpi", 150)))
         finally:
-            try:
-                Path(pdf).unlink()
-            except OSError:
-                pass
+            if not _is_source(pdf):      # never delete a user's own file
+                try:
+                    Path(pdf).unlink()
+                except OSError:
+                    pass
     if src.suffix.lower() != ".pptx":
         raise UserError(f"Converting {src.suffix} files needs LibreOffice installed.")
     from .render import pptx_to_images
-    imgs = pptx_to_images(src)
+    try:
+        imgs = pptx_to_images(src)
+    except UserError:
+        raise
+    except Exception as e:
+        name = type(e).__name__
+        if name == "PackageNotFoundError":
+            raise UserError("Couldn't open this presentation. If it's stored on OneDrive/cloud, "
+                            "right-click it → 'Always keep on this device', then try again. "
+                            "(Your original file is untouched.)")
+        raise UserError(f"Couldn't read this presentation ({name}). It may be corrupted or "
+                        "password-protected. (Your original file is untouched.)")
     if not imgs:
         raise UserError("This presentation has no slides.")
     return imgs
@@ -630,7 +757,7 @@ def epub_to_pdf(src) -> list[Path]:
 # ------------------------------------------------------------------ action catalog
 _TARGETS = {"image": IMAGE_TARGETS, "pdf": PDF_TARGETS, "docx": DOCX_TARGETS,
             "text": TEXT_TARGETS, "sheet": SHEET_TARGETS, "slide": SLIDE_TARGETS,
-            "ebook": EBOOK_TARGETS}
+            "ebook": EBOOK_TARGETS, "vector": VECTOR_TARGETS}
 
 
 def convert_targets(cat: str, src_ext: str) -> list[str]:
@@ -639,6 +766,8 @@ def convert_targets(cat: str, src_ext: str) -> list[str]:
     targets = [t for t in _TARGETS.get(cat, []) if t != cur]
     if not HEIF_OK:
         targets = [t for t in targets if t not in ("HEIC", "AVIF")]
+    if not VTRACER_OK:
+        targets = [t for t in targets if t != "SVG"]
     return targets
 
 
@@ -667,6 +796,8 @@ def _convert(srcs, cat, target):
         return slide_to_txt(src)
     if cat == "ebook":
         return epub_to_pdf(src) if target == "PDF" else epub_to_txt(src)
+    if cat == "vector":
+        return svg_to_pdf(src) if target == "PDF" else svg_to_image(src, target)
     raise UserError(f"Can't convert {cat} to {target}")
 
 
@@ -690,6 +821,7 @@ TOOLS = {
         ("Split", lambda s: split_slides(s[0]), False),
     ],
     "ebook": [],
+    "vector": [],
 }
 
 # Tools that ask the user to choose pages/slides first (handled in app.py).
@@ -707,10 +839,31 @@ def actions_for(cat: str, src_ext: str, n_files: int) -> dict[str, list[str]]:
     return {"convert": convert, "tools": tools}
 
 
-def run(cat: str, ring: str, label: str, srcs: list, params: dict | None = None) -> list[Path]:
+def run(cat: str, ring: str, label: str, srcs: list, params: dict | None = None,
+        on_progress=None) -> list[Path]:
     """Execute the chosen slice. `ring` is 'convert' or 'tools'. `params` carries
-    options such as the selected pages for Split."""
+    options such as the selected pages for Split. Originals are protected throughout."""
+    global _SOURCES, _PROGRESS
     params = params or {}
+    _SOURCES = {_key(s) for s in srcs if s}
+    _PROGRESS = on_progress
+    try:
+        for s in srcs:              # hydrate cloud files before touching them
+            if s:
+                _ensure_readable(s)
+        outputs = _dispatch(cat, ring, label, srcs, params)
+        # tripwire: a source must never disappear during a conversion
+        for s in srcs:
+            if s and not Path(s).exists():
+                raise UserError("Internal safety check failed: a source file went missing. "
+                                "Nothing was deleted on purpose — please report this.")
+        return outputs
+    finally:
+        _SOURCES = set()
+        _PROGRESS = None
+
+
+def _dispatch(cat, ring, label, srcs, params):
     if ring == "convert":
         return _convert(srcs, cat, label)
     if label == "Split":

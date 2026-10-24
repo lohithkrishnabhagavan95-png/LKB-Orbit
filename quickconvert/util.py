@@ -11,6 +11,7 @@ DOCX_EXTS = {".docx", ".doc", ".odt", ".rtf"}
 SHEET_EXTS = {".xlsx", ".xls", ".csv", ".tsv", ".ods"}
 SLIDE_EXTS = {".pptx", ".ppt", ".odp"}
 EBOOK_EXTS = {".epub"}
+VECTOR_EXTS = {".svg"}
 TEXT_EXTS = {".txt", ".md", ".log", ".json", ".xml", ".html", ".htm"}
 
 APP_NAME = "LKB Orbit"
@@ -42,6 +43,8 @@ def category(path: str | Path) -> str | None:
         return "slide"
     if ext in EBOOK_EXTS:
         return "ebook"
+    if ext in VECTOR_EXTS:
+        return "vector"
     if ext in TEXT_EXTS:
         return "text"
     return None

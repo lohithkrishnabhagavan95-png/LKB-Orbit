@@ -7,4 +7,5 @@ python-pptx>=1.0
 xlrd>=2.0
 pillow-heif>=0.18
 EbookLib>=0.18
+vtracer>=0.6
 pywin32>=306; sys_platform == "win32"

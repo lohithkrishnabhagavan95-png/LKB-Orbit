@@ -17,7 +17,6 @@ from PySide6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon, QFi
 from . import engine, integration
 from .dialogs import PagePicker
 from .menu import RadialMenu
-from .progress import ProgressWindow
 from .trigger import DragWatcher
 from .util import APP_NAME, CONFIG, UserError, file_size, human_size, resolve_shortcuts
 
@@ -59,6 +58,7 @@ def make_icon() -> QIcon:
 class _Sig(QObject):
     done = Signal(list, float)  # outputs, seconds
     failed = Signal(str)
+    progress = Signal(int, int)  # done, total
 
 
 class Job(QRunnable):
@@ -72,7 +72,8 @@ class Job(QRunnable):
         import time
         t0 = time.time()
         try:
-            outs = engine.run(self.cat, self.ring, self.label, self.paths, self.params)
+            outs = engine.run(self.cat, self.ring, self.label, self.paths, self.params,
+                              on_progress=lambda d, t: self.sig.progress.emit(d, t))
             self.sig.done.emit([str(o) for o in outs], time.time() - t0)
         except UserError as e:
             self.sig.failed.emit(str(e))
@@ -92,10 +93,9 @@ class QuickConvert(QObject):
 
         self.menu = RadialMenu()
         self.menu.action_chosen.connect(self._start)
-        self.progress = ProgressWindow()
 
         self.watcher = DragWatcher(self.menu.isVisible, lambda: self.menu.got_drag,
-                                   lambda: self.menu.click_mode)
+                                   lambda: self.menu.click_mode, lambda: self.menu.converting)
         self.watcher.set_key(CONFIG.get("trigger", "shift"))
         self.watcher.show_menu.connect(lambda pos: self.menu.popup(pos))
         self.watcher.toggle_ring.connect(self.menu.toggle)
@@ -192,15 +192,16 @@ class QuickConvert(QObject):
         if ring == "tools" and label in engine.NEEDS_PAGE_PICK:
             params = self._ask_pages(cat, label, paths)
             if params is None:   # cancelled
+                self.menu.hide()
                 return
         job = Job(cat, ring, label, paths, params)
         job.setAutoDelete(False)
         self._jobs.add(job)
         job.sig.done.connect(lambda outs, secs, j=job: self._finished(outs, secs, j))
         job.sig.failed.connect(lambda msg, j=job: self._error(msg, j))
-        op = f"Converting to {label}" if ring == "convert" else f"{label}…"
-        name = os.path.basename(paths[0]) + (f"  +{len(paths) - 1} more" if len(paths) > 1 else "")
-        self.progress.start(op, name)
+        job.sig.progress.connect(self.menu.set_progress)
+        op = f"Converting to {label}…" if ring == "convert" else f"{label}…"
+        self.menu.begin_convert(op)
         self.pool.start(job)
         self.tray.setToolTip(f"{APP_NAME} — converting…")
 
@@ -228,7 +229,7 @@ class QuickConvert(QObject):
         self._jobs.discard(job)
         self.last_outputs = outputs
         self.tray.setToolTip(f"{APP_NAME} — drag a file, hold Shift")
-        self.progress.finish(outputs)
+        self.menu.convert_done(outputs)
         if not outputs:
             return
         total = sum(file_size(o) for o in outputs)
@@ -239,7 +240,7 @@ class QuickConvert(QObject):
     def _error(self, msg, job):
         self._jobs.discard(job)
         self.tray.setToolTip(f"{APP_NAME} — drag a file, hold Shift")
-        self.progress.fail(msg)
+        self.menu.convert_fail(msg)
         self.tray.showMessage(f"{APP_NAME}: couldn't convert", msg, QSystemTrayIcon.Warning, 5000)
 
 
@@ -308,6 +309,8 @@ def _selftest() -> int:
         assert len(engine.slide_to_images(pf, "PNG")) == 2       # one PNG per slide
         if engine.HEIF_OK:
             assert engine.image_to(png, "HEIC")[0].exists()      # pillow-heif
+        if engine.VTRACER_OK:
+            assert engine.image_to(png, "SVG")[0].exists()       # vtracer (raster -> SVG)
         from ebooklib import epub
         bk = epub.EpubBook()
         bk.set_title("t")

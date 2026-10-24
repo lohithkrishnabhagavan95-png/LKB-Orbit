@@ -20,11 +20,13 @@ class DragWatcher(QObject):
     toggle_ring = Signal()
     hide_menu = Signal()
 
-    def __init__(self, menu_visible, menu_got_drag, menu_click_mode=lambda: False, parent=None):
+    def __init__(self, menu_visible, menu_got_drag, menu_click_mode=lambda: False,
+                 menu_converting=lambda: False, parent=None):
         super().__init__(parent)
         self.menu_visible = menu_visible
         self.menu_got_drag = menu_got_drag
         self.menu_click_mode = menu_click_mode
+        self.menu_converting = menu_converting
         self.enabled = sys.platform == "win32"
         self.vk = VK["shift"]
         self._down_at: QPoint | None = None
@@ -52,9 +54,9 @@ class DragWatcher(QObject):
         pos = QCursor.pos()
 
         if self.menu_visible():
-            # A tray-opened (click-mode) menu manages its own lifecycle (click or
-            # Escape). Only drag-opened menus are driven by the mouse button here.
-            if self.menu_click_mode():
+            # A tray-opened (click-mode) menu, or one showing conversion progress,
+            # manages its own lifecycle. Only drag-opened menus are driven here.
+            if self.menu_click_mode() or self.menu_converting():
                 self._key_was = key
                 return
             if not lbtn or esc:

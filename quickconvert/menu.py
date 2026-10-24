@@ -16,6 +16,16 @@ SIZE = 320
 R_OUT = 150
 R_IN = 58
 
+# Short descriptor under each slice's main label (two-line slices, reference style).
+SUB = {
+    "JPG": "photo", "PNG": "lossless", "WEBP": "small", "PDF": "document",
+    "HEIC": "image", "AVIF": "image", "TIFF": "image", "BMP": "image",
+    "GIF": "image", "ICO": "icon", "SVG": "vector",
+    "DOCX": "word", "TXT": "text", "CSV": "data", "XLSX": "sheet",
+    "Compress": "smaller", "Resize": "fit", "Merge": "combine",
+    "Split": "pages", "Rotate": "90°", "→ PDF": "combine",
+}
+
 
 def _local_paths(mime) -> list[str]:
     out = []
@@ -46,6 +56,69 @@ class RadialMenu(QWidget):
         self._pt = 1.0
         self._panim = QTimer(self, interval=16, timeout=self._pstep)
         self._can_dismiss = False
+        # in-place conversion progress (ring shown inside this window, at the cursor)
+        self.conv = None            # None | "run" | "done" | "fail"
+        self._cpct = None
+        self._cspin = 0.0
+        self._ccheck = 0.0
+        self._cmsg = ""
+        self._coutputs: list[str] = []
+        self._ctimer = QTimer(self, interval=16, timeout=self._ctick)
+        self._cclose = QTimer(self, singleShot=True, timeout=self._creset)
+
+    @property
+    def converting(self) -> bool:
+        return self.conv is not None
+
+    def begin_convert(self, op: str):
+        self.conv = "run"
+        self._cpct = None
+        self._cspin = 0.0
+        self._ccheck = 0.0
+        self._cmsg = op
+        self.click_mode = False     # stop click/drag handling during conversion
+        if not self._ctimer.isActive():
+            self._ctimer.start()
+        self.show()
+        self.raise_()
+        self.update()
+
+    def set_progress(self, done: int, total: int):
+        if self.conv == "run" and total > 0:
+            self._cpct = max(0.0, min(1.0, done / total))
+
+    def convert_done(self, outputs: list):
+        self._coutputs = [str(o) for o in outputs]
+        self.conv = "done"
+        self._ccheck = 0.0
+        self._cmsg = (self._coutputs[0].split("\\")[-1].split("/")[-1]
+                      + (f"  +{len(self._coutputs) - 1}" if len(self._coutputs) > 1 else "")) if self._coutputs else "Done"
+        self._cclose.start(2600)
+        self.update()
+
+    def convert_fail(self, msg: str):
+        self.conv = "fail"
+        self._ccheck = 0.0
+        self._cmsg = msg
+        self._cclose.start(6500)
+        self.update()
+
+    def _ctick(self):
+        if self.conv == "run" and self._cpct is None:
+            self._cspin = (self._cspin + 7) % 360
+        elif self.conv in ("done", "fail"):
+            self._ccheck = min(1.0, self._ccheck + 0.09)
+        self.update()
+
+    def _creset(self):
+        self.conv = None
+        self._ctimer.stop()
+        self.hide()
+
+    def hideEvent(self, e):
+        self.conv = None
+        self._ctimer.stop()
+        super().hideEvent(e)
 
     # ------------------------------------------------------------ lifecycle
     def popup(self, global_pos, paths: list[str] | None = None):
@@ -235,70 +308,138 @@ class RadialMenu(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, e):
-        if self.click_mode:
+        if self.conv == "done":
+            self._open_result()
+            self._creset()
+        elif self.conv is None and self.click_mode:
             self._fire(self.hit(e.position()))
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
-            self.hide()
-        elif e.key() in (Qt.Key_Tab, Qt.Key_Space):
+            self._creset() if self.conv else self.hide()
+        elif self.conv is None and e.key() in (Qt.Key_Tab, Qt.Key_Space):
             self.toggle()
 
     def _fire(self, i: int):
         slices = self.current()
         if 0 <= i < len(slices) and self.cat:
+            # Keep the window open; the app drives the in-place progress ring
+            # (begin_convert / set_progress / convert_done).
             self.action_chosen.emit(self.cat, self.ring, slices[i], list(self.paths))
-        self.hide()
+        else:
+            self.hide()
+
+    def _open_result(self):
+        if not self._coutputs:
+            return
+        import os
+        import subprocess
+        import sys as _sys
+        p = os.path.normpath(self._coutputs[0])
+        if _sys.platform == "win32":
+            subprocess.run(["explorer", "/select,", p])
+
+    @staticmethod
+    def _ease_back(t: float) -> float:
+        t = max(0.0, min(1.0, t))
+        c1, c3 = 1.70158, 2.70158
+        return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2
+
+    def _paint_ring(self, p: QPainter, c: QPointF):
+        R = 74
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(20, 21, 26, 250))
+        p.drawEllipse(c, R + 18, R + 18)
+        rect = QRectF(c.x() - R, c.y() - R, 2 * R, 2 * R)
+        if self.conv == "run":
+            pen = QPen(QColor(255, 255, 255, 40), 9, Qt.SolidLine, Qt.RoundCap)
+            p.setPen(pen)
+            p.drawEllipse(rect)
+            pen.setColor(QColor(124, 111, 232))
+            p.setPen(pen)
+            if self._cpct is None:
+                p.drawArc(rect, int(-self._cspin * 16), int(-90 * 16))
+            else:
+                p.drawArc(rect, int(90 * 16), int(-self._cpct * 360 * 16))
+                p.setPen(QColor(234, 242, 255))
+                p.setFont(QFont("Segoe UI", 24, QFont.Bold))
+                p.drawText(rect, Qt.AlignCenter, f"{int(self._cpct * 100)}%")
+        else:
+            col = QColor(34, 197, 94) if self.conv == "done" else QColor(239, 68, 68)
+            rr = R * 0.72 * self._ease_back(self._ccheck)
+            p.setPen(Qt.NoPen)
+            p.setBrush(col)
+            p.drawEllipse(QRectF(c.x() - rr, c.y() - rr, 2 * rr, 2 * rr))
+            p.setPen(QPen(QColor(255, 255, 255), max(3, rr / 7), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            if self.conv == "done":
+                p.drawLine(int(c.x() - rr * 0.42), int(c.y() + rr * 0.02),
+                           int(c.x() - rr * 0.08), int(c.y() + rr * 0.36))
+                p.drawLine(int(c.x() - rr * 0.08), int(c.y() + rr * 0.36),
+                           int(c.x() + rr * 0.46), int(c.y() - rr * 0.34))
+            else:
+                for s in (1, -1):
+                    p.drawLine(int(c.x() - rr * 0.34 * s), int(c.y() - rr * 0.34),
+                               int(c.x() + rr * 0.34 * s), int(c.y() + rr * 0.34))
+        p.setPen(QColor(210, 218, 235))
+        p.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+        p.drawText(QRectF(10, c.y() + R + 24, self.width() - 20, 48),
+                   int(Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap), self._cmsg[:90])
 
     # ------------------------------------------------------------ painting
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         c = QPointF(self.width() / 2, self.height() / 2)
-        dark = self.palette().window().color().value() < 128
-        fg = QColor(235, 238, 245) if dark else QColor(28, 30, 36)
-        base = QColor(34, 37, 44, 235) if dark else QColor(255, 255, 255, 240)
-        accent = QColor(59, 130, 246)
+        if self.conv:
+            self._paint_ring(p, c)
+            return
+        # Dark theme always, like the reference app.
+        fg = QColor(238, 240, 248)
+        fg_dim = QColor(150, 158, 178)
+        base = QColor(30, 31, 37, 245)         # charcoal slice
+        base_lo = QColor(24, 25, 30, 245)
+        accent = QColor(124, 111, 232)          # purple hover (reference)
 
         slices = self.current()
         if not slices:
-            self._hub(p, c, fg, accent)
+            self._hub(p, c, fg, fg_dim, accent)
             msg = "Drop a file" if not self.paths else f"No actions for .{self.cat or '?'}"
             p.setPen(fg)
-            p.setFont(QFont("Segoe UI", 10))
+            p.setFont(QFont("Segoe UI", 11))
             p.drawText(self.rect(), Qt.AlignCenter, msg)
             return
 
-        # faint outer halo ring for depth
-        p.setPen(QPen(QColor(59, 130, 246, 45), 3))
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(c, R_OUT + 7, R_OUT + 7)
-
-        hover_hi = QColor(96, 165, 250)   # brighter accent for the hovered slice
         for i, label in enumerate(slices):
             hot = (i == self.hover)
-            path = self._slice_path(i, lift=8.0 if hot else 0.0)
+            path = self._slice_path(i, lift=9.0 if hot else 0.0)
             if hot:
-                glow = self._slice_path(i, lift=8.0)
+                glow = self._slice_path(i, lift=9.0)
                 p.setPen(Qt.NoPen)
-                p.fillPath(glow, QColor(59, 130, 246, 70))
-                p.setPen(QPen(QColor(150, 190, 255, 220), 2))
-                p.fillPath(path, hover_hi)
+                p.fillPath(glow, QColor(124, 111, 232, 90))
+                p.setPen(QPen(QColor(168, 158, 245, 235), 2))
+                p.fillPath(path, accent)
             else:
-                p.setPen(QPen(QColor(0, 0, 0, 45), 1))
-                p.fillPath(path, base)
+                p.setPen(QPen(QColor(0, 0, 0, 60), 1))
+                p.fillPath(path, base if i % 2 == 0 else base_lo)
             p.drawPath(path)
-            pt = self._label_point(i, (R_IN + R_OUT) / 2 + (6 if hot else 0))
+            # two-line label: action + a short descriptor
+            lift = 6 if hot else 0
+            pt = self._label_point(i, (R_IN + R_OUT) / 2 + lift)
+            sub = SUB.get(label, "")
             p.setPen(QColor(255, 255, 255) if hot else fg)
-            p.setFont(QFont("Segoe UI", 11 if hot else 10, QFont.DemiBold))
-            p.drawText(QRectF(pt.x() - 50, pt.y() - 13, 100, 26), Qt.AlignCenter, label)
+            p.setFont(QFont("Segoe UI", 12 if hot else 11, QFont.DemiBold))
+            p.drawText(QRectF(pt.x() - 54, pt.y() - 20, 108, 22), Qt.AlignCenter, label)
+            if sub:
+                p.setPen(QColor(230, 226, 255) if hot else fg_dim)
+                p.setFont(QFont("Segoe UI", 9))
+                p.drawText(QRectF(pt.x() - 54, pt.y() + 2, 108, 16), Qt.AlignCenter, sub)
 
-        self._hub(p, c, fg, accent)
+        self._hub(p, c, fg, fg_dim, accent)
 
-    def _hub(self, p: QPainter, c: QPointF, fg: QColor, accent: QColor):
+    def _hub(self, p: QPainter, c: QPointF, fg: QColor, fg_dim: QColor, accent: QColor):
         rin = R_IN - 6
         p.setPen(Qt.NoPen)
-        p.setBrush(accent)
+        p.setBrush(QColor(20, 21, 26, 250))
         p.drawEllipse(c, rin, rin)
 
         if self.preview and not self.preview.isNull() and self.paths:

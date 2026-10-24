@@ -1,4 +1,7 @@
 """End-to-end checks of the processing engine on generated files."""
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # for the SVG (Qt) render test
+
 from pathlib import Path
 
 import pytest
@@ -203,6 +206,29 @@ def test_epub_conversions(tmp_path):
     assert pdf.exists() and pdf.suffix == ".pdf"
     from quickconvert.util import category
     assert category("book.epub") == "ebook"
+
+
+def test_svg_trace_and_render(tmp_path):
+    if not engine.VTRACER_OK:
+        pytest.skip("vtracer not installed")
+    png = tmp_path / "shape.png"
+    im = Image.new("RGB", (80, 80), (255, 255, 255))
+    for x in range(20, 60):
+        for y in range(20, 60):
+            im.putpixel((x, y), (200, 40, 40))
+    im.save(png)
+    (svg,) = engine.image_to(png, "SVG")              # raster -> SVG (vtracer)
+    assert svg.exists() and svg.read_text(encoding="utf-8").lstrip().startswith("<")
+
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    (p2,) = engine.svg_to_image(svg, "PNG")           # SVG -> PNG (QtSvg)
+    assert p2.exists() and Image.open(p2).size[0] > 0
+    (pdf,) = engine.svg_to_pdf(svg)
+    assert pdf.exists()
+    from quickconvert.util import category
+    assert category("x.svg") == "vector"
+    assert "SVG" in engine.convert_targets("image", ".png")
 
 
 def test_categories():

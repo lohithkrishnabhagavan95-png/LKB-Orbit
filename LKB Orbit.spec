@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('quickconvert/assets', 'quickconvert/assets')]
 binaries = []
-hiddenimports = ['win32com', 'win32com.client', 'win32timezone']
+hiddenimports = ['win32com', 'win32com.client', 'win32timezone', 'PySide6.QtSvg']
 datas += collect_data_files('openpyxl')
 tmp_ret = collect_all('pptx')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -13,6 +13,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pillow_heif')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ebooklib')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('vtracer')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

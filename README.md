@@ -53,11 +53,12 @@ the **right-click → Convert with LKB Orbit** entry from the tray menu.
 
 | File | Convert to | Tools |
 |------|-----------|-------|
-| **Images** (PNG, JPG, WEBP, TIFF, BMP, GIF, ICO) | any of those, or PDF | Compress · Resize · several images → one PDF |
+| **Images** (PNG, JPG, WEBP, HEIC, AVIF, TIFF, BMP, GIF, ICO) | any of those, or PDF | Compress · Resize · several images → one PDF |
 | **PDF** | JPG / PNG (per page), DOCX, TXT | Merge · Split (pick pages) · Rotate · Compress |
 | **Word** (.docx, .doc, .odt, .rtf) | PDF, TXT | — |
 | **Spreadsheets** (.xlsx, .xls, .csv, .tsv, .ods) | PDF, CSV, XLSX | — |
 | **Presentations** (.pptx, .ppt, .odp) | PDF, PNG, TXT | Split (pick slides) |
+| **E-books** (.epub) | PDF, TXT | — |
 | **Text** (.txt, .md, .json, .xml, .html…) | PDF, DOCX | — |
 
 Highlights:
@@ -66,6 +67,7 @@ Highlights:
 - **Originals are preserved** and outputs never overwrite existing files.
 - **Multi-page jobs auto-folder** — converting a PDF or deck to images drops them in a folder named after the file.
 - **Split by page/slide** — click exactly the pages or slides you want to pull out.
+- **Live progress window** — a conversion shows real progress and ends with Open file / Open folder.
 - Most conversions are **pure Python**. A few (`.doc/.odt/.rtf`, `.ods`, presentation → PDF/PNG)
   use **LibreOffice** if it's installed, and say so clearly if it isn't.
 - Windows integration: **start with Windows** and an **Explorer right-click** entry, both toggled from the tray (no admin needed).

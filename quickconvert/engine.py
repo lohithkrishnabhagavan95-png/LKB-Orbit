@@ -18,19 +18,32 @@ try:
 except ImportError:  # pragma: no cover
     import fitz  # type: ignore
 
+try:  # HEIC / AVIF (iPhone photos) support
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    try:
+        pillow_heif.register_avif_opener()
+    except Exception:
+        pass
+    HEIF_OK = True
+except Exception:  # pragma: no cover
+    HEIF_OK = False
+
 # ------------------------------------------------------------------ targets
-IMAGE_TARGETS = ["PNG", "JPG", "WEBP", "TIFF", "BMP", "GIF", "ICO", "PDF"]
+IMAGE_TARGETS = ["PNG", "JPG", "WEBP", "HEIC", "AVIF", "TIFF", "BMP", "GIF", "ICO", "PDF"]
 PDF_TARGETS = ["JPG", "PNG", "DOCX", "TXT"]
 DOCX_TARGETS = ["PDF", "TXT"]
 TEXT_TARGETS = ["PDF", "DOCX"]
 SHEET_TARGETS = ["PDF", "CSV", "XLSX"]
 SLIDE_TARGETS = ["PDF", "PNG", "TXT"]
+EBOOK_TARGETS = ["PDF", "TXT"]
 
-PIL_FORMAT = {"PNG": "PNG", "JPG": "JPEG", "WEBP": "WEBP", "TIFF": "TIFF",
-              "BMP": "BMP", "GIF": "GIF", "ICO": "ICO", "PDF": "PDF"}
+PIL_FORMAT = {"PNG": "PNG", "JPG": "JPEG", "WEBP": "WEBP", "HEIC": "HEIF", "AVIF": "AVIF",
+              "TIFF": "TIFF", "BMP": "BMP", "GIF": "GIF", "ICO": "ICO", "PDF": "PDF"}
 NO_ALPHA = {"JPG", "PDF", "BMP"}
 EXT_TARGET = {".jpg": "JPG", ".jpeg": "JPG", ".png": "PNG", ".webp": "WEBP",
-              ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP", ".gif": "GIF", ".ico": "ICO"}
+              ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP", ".gif": "GIF", ".ico": "ICO",
+              ".heic": "HEIC", ".heif": "HEIC", ".avif": "AVIF"}
 
 
 # ------------------------------------------------------------------ io helpers
@@ -79,7 +92,7 @@ def save_image(im: Image.Image, out, target: str, quality: int | None = None) ->
     if target in NO_ALPHA:
         im = flatten(im)
     kw: dict = {}
-    if target in ("JPG", "WEBP"):
+    if target in ("JPG", "WEBP", "HEIC", "AVIF"):
         kw["quality"] = quality
     if target == "JPG":
         kw.update(optimize=True, progressive=True)
@@ -570,15 +583,63 @@ def page_count(cat: str, src) -> int:
     return 1
 
 
+# ------------------------------------------------------------------ e-books (.epub)
+def _epub_docs(src) -> list[str]:
+    """Chapter HTML documents of an EPUB, in reading (spine) order."""
+    import ebooklib
+    from ebooklib import epub
+    book = epub.read_epub(str(src))
+    docs = []
+    for idref, _show in book.spine:
+        it = book.get_item_with_id(idref)
+        if it is not None and it.get_type() == ebooklib.ITEM_DOCUMENT:
+            docs.append(it.get_content().decode("utf-8", "replace"))
+    if not docs:
+        docs = [it.get_content().decode("utf-8", "replace")
+                for it in book.get_items_of_type(ebooklib.ITEM_DOCUMENT)]
+    return docs
+
+
+def epub_to_txt(src) -> list[Path]:
+    import re
+    out_text = []
+    for doc in _epub_docs(src):
+        doc = re.sub(r"(?is)<(script|style).*?</\1>", " ", doc)
+        doc = re.sub(r"(?s)<[^>]+>", " ", doc)
+        out_text.append(html.unescape(re.sub(r"[ \t\r\f\v]+", " ", doc)).strip())
+    out = sibling(src, ext=".txt")
+    out.write_text("\n\n".join(t for t in out_text if t), encoding="utf-8")
+    return [out]
+
+
+def epub_to_pdf(src) -> list[Path]:
+    import re
+    bodies = []
+    for doc in _epub_docs(src):
+        m = re.search(r"(?is)<body[^>]*>(.*?)</body>", doc)
+        body = m.group(1) if m else doc
+        body = re.sub(r"(?is)<img[^>]*>", "", body)  # images live in the zip; drop them
+        bodies.append(body)
+    joined = '<div style="page-break-after:always">' + \
+             '</div><div style="page-break-after:always">'.join(bodies) + "</div>"
+    out = sibling(src, ext=".pdf")
+    _html_to_pdf(joined, out)
+    return [out]
+
+
 # ------------------------------------------------------------------ action catalog
 _TARGETS = {"image": IMAGE_TARGETS, "pdf": PDF_TARGETS, "docx": DOCX_TARGETS,
-            "text": TEXT_TARGETS, "sheet": SHEET_TARGETS, "slide": SLIDE_TARGETS}
+            "text": TEXT_TARGETS, "sheet": SHEET_TARGETS, "slide": SLIDE_TARGETS,
+            "ebook": EBOOK_TARGETS}
 
 
 def convert_targets(cat: str, src_ext: str) -> list[str]:
-    same = {"jpeg": "JPG", "jpg": "JPG", "tif": "TIFF", "tiff": "TIFF"}
+    same = {"jpeg": "JPG", "jpg": "JPG", "tif": "TIFF", "tiff": "TIFF", "heif": "HEIC"}
     cur = same.get(src_ext.lower().lstrip("."), src_ext.upper().lstrip("."))
-    return [t for t in _TARGETS.get(cat, []) if t != cur]
+    targets = [t for t in _TARGETS.get(cat, []) if t != cur]
+    if not HEIF_OK:
+        targets = [t for t in targets if t not in ("HEIC", "AVIF")]
+    return targets
 
 
 def _convert(srcs, cat, target):
@@ -604,6 +665,8 @@ def _convert(srcs, cat, target):
         if target in ("PNG", "JPG"):
             return slide_to_images(src, target)
         return slide_to_txt(src)
+    if cat == "ebook":
+        return epub_to_pdf(src) if target == "PDF" else epub_to_txt(src)
     raise UserError(f"Can't convert {cat} to {target}")
 
 
@@ -626,6 +689,7 @@ TOOLS = {
     "slide": [
         ("Split", lambda s: split_slides(s[0]), False),
     ],
+    "ebook": [],
 }
 
 # Tools that ask the user to choose pages/slides first (handled in app.py).

@@ -4,11 +4,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif", ".ico"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif", ".ico",
+              ".heic", ".heif", ".avif"}
 PDF_EXTS = {".pdf"}
 DOCX_EXTS = {".docx", ".doc", ".odt", ".rtf"}
 SHEET_EXTS = {".xlsx", ".xls", ".csv", ".tsv", ".ods"}
 SLIDE_EXTS = {".pptx", ".ppt", ".odp"}
+EBOOK_EXTS = {".epub"}
 TEXT_EXTS = {".txt", ".md", ".log", ".json", ".xml", ".html", ".htm"}
 
 APP_NAME = "LKB Orbit"
@@ -38,6 +40,8 @@ def category(path: str | Path) -> str | None:
         return "sheet"
     if ext in SLIDE_EXTS:
         return "slide"
+    if ext in EBOOK_EXTS:
+        return "ebook"
     if ext in TEXT_EXTS:
         return "text"
     return None

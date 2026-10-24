@@ -181,16 +181,19 @@ class RadialMenu(QWidget):
         ang = (math.degrees(math.atan2(dy, dx)) - 90) % 360   # 0 at top, clockwise slices
         return min(n - 1, int(ang / self._span()))
 
-    def _slice_path(self, i: int) -> QPainterPath:
+    def _slice_path(self, i: int, lift: float = 0.0) -> QPainterPath:
         c = QPointF(self.width() / 2, self.height() / 2)
         span = self._span()
-        a0 = 90 + i * span
-        outer = QRectF(c.x() - R_OUT, c.y() - R_OUT, 2 * R_OUT, 2 * R_OUT)
-        inner = QRectF(c.x() - R_IN, c.y() - R_IN, 2 * R_IN, 2 * R_IN)
+        gap = min(3.0, span * 0.08)          # a small gap between slices = cleaner donut
+        a0 = 90 + i * span + gap / 2
+        sp = span - gap
+        ro, ri = R_OUT + lift, R_IN + max(0, lift * 0.3)
+        outer = QRectF(c.x() - ro, c.y() - ro, 2 * ro, 2 * ro)
+        inner = QRectF(c.x() - ri, c.y() - ri, 2 * ri, 2 * ri)
         path = QPainterPath()
         path.arcMoveTo(outer, a0)
-        path.arcTo(outer, a0, span)
-        path.arcTo(inner, a0 + span, -span)
+        path.arcTo(outer, a0, sp)
+        path.arcTo(inner, a0 + sp, -sp)
         path.closeSubpath()
         return path
 
@@ -266,15 +269,29 @@ class RadialMenu(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, msg)
             return
 
+        # faint outer halo ring for depth
+        p.setPen(QPen(QColor(59, 130, 246, 45), 3))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(c, R_OUT + 7, R_OUT + 7)
+
+        hover_hi = QColor(96, 165, 250)   # brighter accent for the hovered slice
         for i, label in enumerate(slices):
-            path = self._slice_path(i)
-            p.setPen(QPen(QColor(0, 0, 0, 40), 1))
-            p.fillPath(path, accent if i == self.hover else base)
+            hot = (i == self.hover)
+            path = self._slice_path(i, lift=8.0 if hot else 0.0)
+            if hot:
+                glow = self._slice_path(i, lift=8.0)
+                p.setPen(Qt.NoPen)
+                p.fillPath(glow, QColor(59, 130, 246, 70))
+                p.setPen(QPen(QColor(150, 190, 255, 220), 2))
+                p.fillPath(path, hover_hi)
+            else:
+                p.setPen(QPen(QColor(0, 0, 0, 45), 1))
+                p.fillPath(path, base)
             p.drawPath(path)
-            pt = self._label_point(i, (R_IN + R_OUT) / 2)
-            p.setPen(QColor(255, 255, 255) if i == self.hover else fg)
-            p.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
-            p.drawText(QRectF(pt.x() - 44, pt.y() - 12, 88, 24), Qt.AlignCenter, label)
+            pt = self._label_point(i, (R_IN + R_OUT) / 2 + (6 if hot else 0))
+            p.setPen(QColor(255, 255, 255) if hot else fg)
+            p.setFont(QFont("Segoe UI", 11 if hot else 10, QFont.DemiBold))
+            p.drawText(QRectF(pt.x() - 50, pt.y() - 13, 100, 26), Qt.AlignCenter, label)
 
         self._hub(p, c, fg, accent)
 

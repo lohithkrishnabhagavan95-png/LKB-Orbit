@@ -166,6 +166,45 @@ def test_split_slides_selected(tmp_path):
     assert len(outs) == 1 and outs[0].exists() and outs[0].suffix == ".pdf"
 
 
+def test_heic_avif_targets():
+    if not engine.HEIF_OK:
+        import pytest
+        pytest.skip("pillow-heif not installed")
+    from PIL import Image
+    import tempfile
+    from pathlib import Path
+    d = Path(tempfile.mkdtemp())
+    png = d / "p.png"
+    Image.new("RGB", (40, 30), (10, 20, 30)).save(png)
+    (heic,) = engine.image_to(png, "HEIC")
+    assert heic.exists() and heic.suffix == ".heic"
+    # and back
+    (jpg,) = engine.image_to(heic, "JPG")
+    assert jpg.exists()
+    assert "HEIC" in engine.convert_targets("image", ".png")
+
+
+def test_epub_conversions(tmp_path):
+    from ebooklib import epub
+    book = epub.EpubBook()
+    book.set_title("Test Book")
+    c = epub.EpubHtml(title="Ch1", file_name="c1.xhtml")
+    c.content = "<html><body><h1>Chapter One</h1><p>Hello world from an ebook.</p></body></html>"
+    book.add_item(c)
+    book.spine = [c]
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    p = tmp_path / "book.epub"
+    epub.write_epub(str(p), book)
+
+    (txt,) = engine.epub_to_txt(p)
+    assert txt.exists() and "Hello world" in txt.read_text(encoding="utf-8")
+    (pdf,) = engine.epub_to_pdf(p)
+    assert pdf.exists() and pdf.suffix == ".pdf"
+    from quickconvert.util import category
+    assert category("book.epub") == "ebook"
+
+
 def test_categories():
     from quickconvert.util import category
     assert category("a.xlsx") == "sheet"
@@ -173,6 +212,8 @@ def test_categories():
     assert category("a.pptx") == "slide"
     assert category("a.docx") == "docx"
     assert category("a.png") == "image"
+    assert category("a.heic") == "image"
+    assert category("a.epub") == "ebook"
 
 
 def test_actions_catalog():

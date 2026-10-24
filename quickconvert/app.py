@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon, QFi
 from . import engine, integration
 from .dialogs import PagePicker
 from .menu import RadialMenu
+from .progress import ProgressWindow
 from .trigger import DragWatcher
 from .util import APP_NAME, CONFIG, UserError, file_size, human_size, resolve_shortcuts
 
@@ -91,6 +92,7 @@ class QuickConvert(QObject):
 
         self.menu = RadialMenu()
         self.menu.action_chosen.connect(self._start)
+        self.progress = ProgressWindow()
 
         self.watcher = DragWatcher(self.menu.isVisible, lambda: self.menu.got_drag,
                                    lambda: self.menu.click_mode)
@@ -196,6 +198,9 @@ class QuickConvert(QObject):
         self._jobs.add(job)
         job.sig.done.connect(lambda outs, secs, j=job: self._finished(outs, secs, j))
         job.sig.failed.connect(lambda msg, j=job: self._error(msg, j))
+        op = f"Converting to {label}" if ring == "convert" else f"{label}…"
+        name = os.path.basename(paths[0]) + (f"  +{len(paths) - 1} more" if len(paths) > 1 else "")
+        self.progress.start(op, name)
         self.pool.start(job)
         self.tray.setToolTip(f"{APP_NAME} — converting…")
 
@@ -223,6 +228,7 @@ class QuickConvert(QObject):
         self._jobs.discard(job)
         self.last_outputs = outputs
         self.tray.setToolTip(f"{APP_NAME} — drag a file, hold Shift")
+        self.progress.finish(outputs)
         if not outputs:
             return
         total = sum(file_size(o) for o in outputs)
@@ -233,6 +239,7 @@ class QuickConvert(QObject):
     def _error(self, msg, job):
         self._jobs.discard(job)
         self.tray.setToolTip(f"{APP_NAME} — drag a file, hold Shift")
+        self.progress.fail(msg)
         self.tray.showMessage(f"{APP_NAME}: couldn't convert", msg, QSystemTrayIcon.Warning, 5000)
 
 
@@ -299,6 +306,20 @@ def _selftest() -> int:
         assert engine.slide_to_txt(pf)[0].exists()               # python-pptx text
         assert engine.slide_to_pdf(pf)[0].exists()               # self-contained slide render -> PDF
         assert len(engine.slide_to_images(pf, "PNG")) == 2       # one PNG per slide
+        if engine.HEIF_OK:
+            assert engine.image_to(png, "HEIC")[0].exists()      # pillow-heif
+        from ebooklib import epub
+        bk = epub.EpubBook()
+        bk.set_title("t")
+        ch = epub.EpubHtml(title="c", file_name="c.xhtml")
+        ch.content = "<html><body><p>hi</p></body></html>"
+        bk.add_item(ch)
+        bk.spine = [ch]
+        bk.add_item(epub.EpubNcx())
+        bk.add_item(epub.EpubNav())
+        ep = d / "b.epub"
+        epub.write_epub(str(ep), bk)
+        assert engine.epub_to_txt(ep)[0].exists()                # ebooklib
         return 0
     except Exception:
         err = traceback.format_exc()
